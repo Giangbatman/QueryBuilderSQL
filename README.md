@@ -1,0 +1,4 @@
+# QueryBuilderSQL
+
+
+ALGORITT GENERATE SQL AUTO 
