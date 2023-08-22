@@ -1,0 +1,965 @@
+package com.coldgod.sqlbuilder;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import com.coldgod.dto.ExportConstraint;
+import com.coldgod.dto.ExportField;
+import com.coldgod.dto.SpecialTable;
+import com.coldgod.fakedb.SpecialTableData;
+
+public class QueryBuilder {
+	
+	public static void main(String[] args) {
+		
+		System.out.println(ExpDataServiceImpl.requestSQL());
+		
+		//System.out.println(countCombination(5));
+	}
+	
+	@SuppressWarnings("unused")
+	@Deprecated
+	public static String generateQuery(List<ExportField> fields, ExportConstraint constraint)
+	{	
+		String sql = "";
+		
+		//Separate the set into smaller sets that has different table names
+		List<List<ExportField>> allFieldSets = new ArrayList<List<ExportField>>();
+		List<ExportField> newFieldSet = new ArrayList<ExportField>();
+		
+		String currentTable = fields.get(0).getTable();
+		
+		List<ExportField> mainFields = new ArrayList<ExportField>();
+		for(int i = 0; i < fields.size(); i++)
+		{
+			ExportField f = fields.get(i);
+			if(f.getTable().equals(currentTable))
+			{
+				newFieldSet.add(f);
+				
+				ExportField newMainField = new ExportField(f);
+				newMainField.setName("t" + (allFieldSets.size()+1) + "." + newMainField.getAlias());
+				mainFields.add(newMainField);
+			}
+			else
+			{
+				allFieldSets.add(newFieldSet);
+				
+				currentTable = f.getTable();
+				newFieldSet = new ArrayList<ExportField>();
+				newFieldSet.add(f);
+				
+				ExportField newMainField = new ExportField(f);
+				newMainField.setName("t" + (allFieldSets.size()+1) + "." + newMainField.getAlias());
+				mainFields.add(newMainField);
+			}
+		}
+		allFieldSets.add(newFieldSet);
+		
+		
+		//Re-assign the table for each main fields
+		for(int i = 0; i < mainFields.size(); i++)
+		{
+			ExportField f = mainFields.get(i);
+			
+			//Get the first substring split by the "." to be the table name
+			String[] splits = f.getName().split("\\.");
+			String tableName = splits[0];
+			
+			//Get the second char of that substring to be the table index
+			int fieldTableIndex = (tableName.charAt(1) - '0') - 1;
+			//System.out.println(fieldTableIndex);
+			
+			f.setTable(generateSingleQuery(allFieldSets.get(fieldTableIndex), constraint, true, true));
+		}
+		
+		//The magic happens here
+		
+		
+		if(false)
+		{
+			sql += generateSingleQuery(allFieldSets.get(0), constraint, true, true);
+			sql += "\n";
+			sql += "--------------------------------------------------------------------------------------------------";
+			sql += "\n";
+			sql += generateSingleQuery(allFieldSets.get(1), constraint, true, true);
+			sql += "\n";
+			sql += "--------------------------------------------------------------------------------------------------";
+			sql += "\n";
+			sql += generateSingleQuery(allFieldSets.get(2), constraint, true, true);
+		}
+		
+		System.out.println(allFieldSets.size());
+		
+		if(allFieldSets.size() <= 1)
+		{
+			sql += generateSingleQuery(allFieldSets.get(0), constraint, true, true);
+		}
+		else
+		{
+			sql += generateSingleQuery(mainFields, constraint, false, true);
+		}
+		
+		return sql;
+	}
+	
+	@SuppressWarnings("unused")
+	public static String generateQueryV2(List<ExportField> fields, ExportConstraint constraint)
+	{
+		if(validateInput(fields, constraint) != true) return "[QueryBuilder]: The input fields or the constraint isn't right";
+		
+		String sql = "";
+		
+		List<List<ExportField>> allFieldSets = new ArrayList<List<ExportField>>();	//This is for different tables
+		
+		List<ExportField> newFieldSet = new ArrayList<ExportField>();	//Field set in one table
+		
+		List<ExportField> mainFields = new ArrayList<ExportField>();
+		
+		
+//		System.out.println(fields.size() + "awdawdawdawd");
+		for(int i = 0; i < fields.size(); i++)
+		{
+			ExportField f = fields.get(i);
+			
+			if(f.getAggregation() != "" /* && f.getGroupBy() != "" */ )
+			{	
+				fields.remove(f);
+				i--;
+				
+				if(f.getGroupBy() != "")	// For fields with GROUP BY
+				{
+					List<ExportField> groupedByFieldSet = new ArrayList<ExportField>();		
+					List<ExportField> groupedBySet = new ArrayList<ExportField>();
+					
+					ExportField groupBy = new ExportField();
+					groupBy.setName(f.getGroupBy());
+					groupBy.setTable(f.getTable());
+					
+
+					ExportField groupedByField = new ExportField(f);
+
+					
+					groupedBySet.add(groupedByField);
+					groupedBySet.add(groupBy);
+					
+					if(isTableSpecial(f.getTable()))
+					{	
+						for(String primaryKey : SpecialTableData.specialTableDictionary.get(f.getTable()))
+						{
+							if (f.getName().equals(primaryKey) || f.getGroupBy().contains(primaryKey))
+								continue;
+							ExportField primaryKeyField = new ExportField();
+							primaryKeyField.setName(primaryKey);
+							primaryKeyField.setTable(f.getTable());
+							primaryKeyField.setFilter("#()$()");
+							
+							groupedBySet.add(primaryKeyField);
+						}
+					}
+					
+					groupedByField.setTable(generateSingleQuery(groupedBySet, constraint, true, false));
+					
+//					groupedByField.setName("t1." + groupedByField.getAlias());
+					
+					if(groupedByField.getName().contains("(c_"))
+					{
+						String name = "";
+						int start = f.getName().indexOf("(");
+						int end = f.getName().indexOf(")");
+						name = f.getName().substring(start+1, end);
+						
+						groupedByField.setName("t1." + name);
+					}
+					else
+					{
+						groupedByField.setName("t1." + groupedByField.getName());
+					}
+
+					groupedByFieldSet.add(groupedByField);
+					
+					groupBy.setTable(groupedByField.getTable());	
+					
+					groupBy.setName("t1." + groupBy.getName());
+					groupBy.setFilter("#()$()");
+					
+					groupedByFieldSet.add(groupBy);
+					
+					if(isTableSpecial(f.getTable()))
+					{	
+						for(String primaryKey : SpecialTableData.specialTableDictionary.get(f.getTable()))
+						{
+							if(f.getName().equals(primaryKey) || f.getGroupBy().contains(primaryKey))
+								continue;
+							ExportField primaryKeyField = new ExportField();
+							primaryKeyField.setName("t1." + primaryKey);
+							primaryKeyField.setTable(groupedByField.getTable());
+							primaryKeyField.setFilter("#()$()");
+							
+							groupedByFieldSet.add(primaryKeyField);
+						}
+					}
+					
+					allFieldSets.add(groupedByFieldSet);
+					
+					ExportField newMainField = new ExportField(groupedByField);
+					
+					String name = "";
+					if(newMainField.getName().contains("."))
+					{
+						int index = newMainField.getName().indexOf(".");
+//						System.out.println(index + " - " + f.getName());
+						
+						name = newMainField.getName().substring(index+1);
+					}
+					else
+					{
+						name = f.getName();
+					}
+					newMainField.setName("T" + (allFieldSets.size()) + "." + name /* + " #####1" */);
+					newMainField.setFilter("#()$()");
+					mainFields.add(newMainField);
+				}
+				else	// For fields not with GROUP BY
+				{
+					List<ExportField> newAggregatedFieldSet = new ArrayList<ExportField>();
+					
+					ExportField aggregatedField = new ExportField(f);
+					
+//					f.setTable(generateSingleQuery(newAggregatedFieldSet, constraint, true, false));
+					
+					newAggregatedFieldSet.add(aggregatedField);
+					
+					if(isTableSpecial(f.getTable()))
+					{	
+						for(String primaryKey : SpecialTableData.specialTableDictionary.get(f.getTable()))
+						{
+							if(f.getName().equals(primaryKey))
+								continue;
+							ExportField primaryKeyField = new ExportField();
+							primaryKeyField.setName(primaryKey);
+							primaryKeyField.setTable(f.getTable());
+							primaryKeyField.setFilter("#()$()");
+							
+							newAggregatedFieldSet.add(primaryKeyField);
+						}
+					}
+
+					allFieldSets.add(newAggregatedFieldSet);
+					
+					ExportField newMainField = new ExportField(aggregatedField);
+					
+					String name = "";
+					if(newMainField.getName().contains("."))
+					{
+						int index = newMainField.getName().indexOf(".");
+//						System.out.println(index + " - " + f.getName());
+						
+						name = newMainField.getName().substring(index+1);
+					}
+					else
+					{
+						if(f.getName().contains("(c_"))
+						{
+							int start = f.getName().indexOf("(");
+							int end = f.getName().indexOf(")");
+							name = f.getName().substring(start+1, end);
+//							name = f.getName();
+						}
+						else
+						{
+							name = f.getName();
+						}
+					}
+					newMainField.setName("T" + (allFieldSets.size()) + "." + name /* + " #####1" */);
+					newMainField.setFilter("#()$()");
+					mainFields.add(newMainField);
+				}
+			}
+		}
+		
+//		System.out.println(allFieldSets.size() + "awdawdawdadawd " + allFieldSets.get(0).get(1).getName() + " - " + allFieldSets.get(0).get(1).getFilter());
+		
+		//Separate the set into smaller sets that has different table names
+		if(fields.size() > 0)
+		{
+			String currentTable = fields.get(0).getTable();
+			
+			for(int i = 0; i < fields.size(); i++)
+			{
+				ExportField f = fields.get(i);
+				
+				boolean added_special_primary_keys = false;
+				if(f.getTable().equals(currentTable))
+				{
+					newFieldSet.add(f);
+					
+					if(isTableSpecial(f.getTable()) && added_special_primary_keys == false)
+					{
+						added_special_primary_keys = true;
+						
+						for(String primaryKey : SpecialTableData.specialTableDictionary.get(f.getTable()))
+						{
+							if(f.getName().equals(primaryKey))
+								continue;
+							ExportField primaryKeyField = new ExportField();
+							primaryKeyField.setName(primaryKey);
+							primaryKeyField.setTable(f.getTable());
+							primaryKeyField.setFilter("#()$()");
+							
+							newFieldSet.add(primaryKeyField);
+						}
+					}
+					
+					ExportField newMainField = new ExportField(f);
+					
+					String name = "";
+					if(newMainField.getName().contains("."))
+					{
+						int index = newMainField.getName().indexOf(".");
+//						System.out.println(index + " - " + f.getName());
+						
+						name = newMainField.getName().substring(index+1);
+					}
+					else
+					{
+						if(f.getName().contains("(c_"))
+						{
+							int start = f.getName().indexOf("(");
+							int end = f.getName().indexOf(")");
+							name = f.getName().substring(start+1, end);
+//							name = f.getName();
+						}
+						else
+						{
+							name = f.getName();
+						}
+						System.out.println("---" + f.getName() + "---");
+					}
+					newMainField.setName("T" + (allFieldSets.size() + 1) + "." + name /* + " #####2" */);
+					mainFields.add(newMainField);
+					//System.out.println(newMainField.getName());
+				}
+				else
+				{
+					added_special_primary_keys = false;
+					allFieldSets.add(newFieldSet);
+					
+					currentTable = f.getTable();
+					newFieldSet = new ArrayList<ExportField>();
+					newFieldSet.add(f);
+					
+					ExportField newMainField = new ExportField(f);
+
+					String name = "";
+					if(newMainField.getName().contains("."))
+					{
+						int index = newMainField.getName().indexOf(".");
+//						System.out.println(index + " - " + f.getName());
+						
+						name = newMainField.getName().substring(index+1);
+					}
+					else
+					{
+						if(f.getName().contains("(c_"))
+						{
+							int start = f.getName().indexOf("(");
+							int end = f.getName().indexOf(")");
+							name = f.getName().substring(start+1, end);
+//							name = f.getName();
+						}
+						else
+						{
+							name = f.getName();
+						}
+						System.out.println("---" + f.getName() + "---");
+					}
+					newMainField.setName("T" + (allFieldSets.size() + 1) + "." + name /* + " #####2" */);
+					mainFields.add(newMainField);
+					//System.out.println(newMainField.getName());
+				}
+			}
+			allFieldSets.add(newFieldSet);
+		}
+		
+		for(List<ExportField> fieldSet : allFieldSets)
+		{
+			//Look for any special field
+			boolean found = false;
+			List<ExportField> subFieldSet = new ArrayList<ExportField>();
+			
+			if(fieldSet.get(0).getName().contains("."))
+			{
+				continue;
+			}
+			
+			for(int i = 0; i < fieldSet.size(); i++)
+			{	
+				ExportField f = fieldSet.get(i);
+				
+				ExportField subField = new ExportField(f);
+				subField.setAggregation("");
+				subFieldSet.add(subField);
+//				System.out.println(subField.getName());
+				
+				if(f.getName().contains("(c_"))
+				{
+					//System.out.println(fieldSet.get(i).getAggregation());
+					found = true;
+//					System.out.println(f.getName() + "<---");
+				}
+			}
+//			System.out.println("xxxxxxxxxxxxxxxxxxxxxxxxx");
+			
+			
+			//If found any special fields
+			if(found = true)	// <-- this statement here is stupid but it works :v
+			{
+//				System.out.println("A field set having special fields is found");
+				String subTable = generateSingleQuery(subFieldSet, constraint, true, false);
+				for(int i = 0; i < fieldSet.size(); i++)
+				{
+					String name = "";
+					if(fieldSet.get(i).getName().contains("(c_"))
+					{
+						int start = fieldSet.get(i).getName().indexOf("(");
+						int end = fieldSet.get(i).getName().indexOf(")");
+						name = fieldSet.get(i).getName().substring(start+1, end);
+//						name = f.getName();
+					}
+					else
+					{
+						name = fieldSet.get(i).getName();
+					}
+					
+					fieldSet.get(i).setName("t1." + name /* + " @@@@@" */);
+					fieldSet.get(i).setTable(subTable);
+//					System.out.println(fieldSet.get(i).getName() + "\n-> " + fieldSet.get(i).getTable());
+				}
+			}
+		}
+		
+		
+		//Re-assign the table for each main fields
+		
+//		System.out.println(mainFields.size());
+		
+		for(int i = 0; i < mainFields.size(); i++)
+		{
+			ExportField f = mainFields.get(i);
+			
+			//Get the first substring split by the "." to be the table name
+			String[] splits = f.getName().split("\\.");
+			String tableName = splits[0];
+			
+			//Get the second char of that substring to be the table index
+			int fieldTableIndex = (tableName.charAt(1) - '0') - 1;
+			//System.out.println(fieldTableIndex);
+			
+			
+			if(allFieldSets.size() <= 1)
+			{
+				f.setTable(generateSingleQuery(allFieldSets.get(0), constraint, true, false));
+			}
+			else
+			{
+				f.setTable(generateSingleQuery(allFieldSets.get(fieldTableIndex), constraint, false, false));
+				f.setAggregation("");
+				f.setFilter("#()$()");
+			}
+			//System.out.println(f.getName() + "\n-->" + generateSingleQuery(allFieldSets.get(fieldTableIndex), constraint, true)); 
+		}
+		
+		if(false)
+		{
+//			for(int i = 0; i < allFieldSets.size(); i++)
+//			{
+//				sql += "\n";
+//				sql += "--------------------------------------------------------------------------------------------------";
+//				sql += "\n";
+//				sql += "\n";
+//				sql += generateSingleQuery(allFieldSets.get(i), constraint, false, true);
+//				//sql += mainFields.get(i).getName() + " -> " + mainFields.get(i).getAggregation() + "\n-> " + mainFields.get(i).getTable();
+//				sql += "\n";
+//			}
+			getSameFieldInFieldSet(allFieldSets);
+		}
+		
+		//sql += generateSingleQuery(mainFields, constraint, false);
+		
+		//The magic happens here
+		
+		if(allFieldSets.size() == 1)
+		{
+			System.out.println("Generating query for set of only 1 table...");
+			sql += generateSingleQuery(allFieldSets.get(0), constraint, false, true);
+		}
+		else
+		{
+			System.out.println("Generating query for set of more than 1 table...");
+			sql += generateSingleQuery(mainFields, constraint, false, true);
+		}
+		
+		return sql;
+//		return "";
+	}
+	
+	private static String generateSingleQuery(List<ExportField> fields, ExportConstraint constraint, boolean isSubquery, boolean isMainQuery)
+	{
+		String sql = "";
+		
+		int fieldSize = fields.size();
+		
+		Set<String> tableSet = new LinkedHashSet<String>();
+		
+		List<Integer> aggregation_indexes = new ArrayList<Integer>();
+		
+		if(fieldSize > 0)
+		{
+			//Select
+			sql += "SELECT ";
+			
+//			boolean isSpecialTable = false;
+			for(int i = 0; i < fieldSize; i++)
+			{
+				ExportField f = fields.get(i);
+				tableSet.add(f.getTable());
+				
+				//Aggregation
+				if(f.getAggregation() != "" && isSubquery != true)
+				{
+					//sql += f.getAggregation() + "(" + ExpDataServiceImpl.lookUpCounter(f.getName()) + ")";
+					sql += f.getAggregation() + "(" + f.getName() + ")";
+				}
+				else
+				{
+					//sql += ExpDataServiceImpl.lookUpCounter(f.getName());
+					sql += f.getName();
+				}
+				
+				if((f.getAggregation() != "" && isSubquery == false)
+						|| f.getName().contains("(c_")
+						)
+				{
+					//System.out.println("Aggregated indexes: " + i);
+					aggregation_indexes.add(i);
+				}
+				
+				//Alias
+				if(f.getAlias() != "" && isSubquery != true && isMainQuery == true)
+				{
+					sql += " AS '" + f.getAlias() + "'";
+				}
+				else
+				{
+					String name = "";
+					if(f.getName().contains("(c_"))
+					{
+						int start = f.getName().indexOf("(");
+						int end = f.getName().indexOf(")");
+						name = f.getName().substring(start+1, end);
+					}
+					else
+					{
+//						String[] parts = f.getName().split("\\.");
+						if(f.getName().contains("."))
+						{
+							int index = f.getName().indexOf(".");
+//							System.out.println(index + " - " + f.getName());
+							
+							name = f.getName().substring(index+1);
+						}
+						else
+						{
+							name = f.getName();
+						}
+						
+//						name = f.getName().indexOf(".") + "";
+					}
+					sql += " AS '" + name + "'";
+				}
+
+				sql += ", ";
+			}
+			//Put the default fields into the table
+			String[] tableList = tableSet.toArray(new String[tableSet.size()]);
+			int count_default_fields = 0;
+			
+			for(DefaultExportFields def : DefaultExportFields.values())
+			{	
+				if(tableSet.size() > 1)
+				{
+					sql += "T1.";
+					sql += def;
+				}
+				else if(tableList.length == 1 && tableList[0].length() > 20)
+				{
+					sql += "t1.";
+					sql += def;
+				}
+				else
+				{			
+					if(def.name() == "record_time")
+					{
+						if(constraint.getDuration().contains("DAY"))
+						{
+							sql += "DATE_FORMAT(record_time, '%Y-%m-%d') AS record_time";
+						}
+						else if(constraint.getDuration().contains("HOUR"))
+						{
+							sql += "CONCAT(DATE_FORMAT(record_time, '%Y-%m-%d %H'), ':', LPAD(0, 2, '0')) AS record_time";
+						}
+						else
+						{
+							String[] parts = constraint.getDuration().split(" ");
+							int minute = Integer.parseInt(parts[0]);
+							sql += "CONCAT(DATE_FORMAT(record_time, '%Y-%m-%d %H'), ':', LPAD(FLOOR(MINUTE(record_time) / " + minute + ") * " + minute + ", 2, '0')) AS record_time";
+						}
+					}
+					else
+					{
+						sql += def;
+					}
+				}
+
+				if(count_default_fields < DefaultExportFields.values().length - 1)
+					sql += ", ";
+				count_default_fields++;
+			}
+			
+			//Add the special primary keys if the table is special
+			if(isSubquery)
+			{
+				
+			}
+			
+			//From/Join
+			
+			sql += "\n";
+			if(tableList.length > 1 || (tableList.length == 1 && tableList[0].length() > 20))
+			{
+				sql += " FROM ";
+				int count_tables = 0;
+				if(tableSet.size() > 1)
+				{
+					for(String table : tableSet)
+					{
+						sql += "(\n " + table + ") AS T" + (count_tables+1);
+						count_tables++;
+						
+						if(count_tables < tableSet.size())
+							sql += ", ";
+						sql += "\n";
+					}
+				}
+				else
+				{
+					sql += "(\n " + fields.get(0).getTable() + ") AS t" + (count_tables+1);
+				}
+				
+//				for(int i = 0; i < tableList.length; i++)
+//				{
+//					String table = tableList[i];
+//					sql += "(\n " + table + ") AS t" + (i+1);
+//					
+//					if(i < tableList.length - 1)
+//						sql += ", ";
+//					sql += "\n";
+//				}
+			}
+			else
+			{
+				sql += " FROM " + fields.get(0).getTable();
+			}
+			
+			
+			//Where
+			sql += "\n";
+			if(isSubquery == true)
+			{
+//				System.out.println("There is a subquery!");
+				
+				sql += " WHERE ";
+				
+				sql += "record_time >= '" + constraint.getFrom() 
+						+ "' AND " + "record_time <= '" + constraint.getTo() + "'";
+//						+ "' AND " + "duration = " + constraint.getDuration();
+				
+				
+			}
+			else if(tableSet.size() > 1)
+			{
+				sql += " WHERE ";
+				
+				//Make join conditions for all default fields of all tables
+				Set<Integer> compared;
+				int total_table_combinations = countCombination(tableSet.size()) * DefaultExportFields.values().length;
+
+				//int count_default_join_condition = 0;
+				int count_combinations = 0;
+				for(DefaultExportFields def : DefaultExportFields.values())
+				{
+					compared = new HashSet<Integer>();
+					for(int i = 0; i < tableSet.size(); i++)
+					{
+						for(int j = 0; j < tableSet.size(); j++)
+						{
+							if(i != j && !compared.contains(j))
+							{
+								sql += "T" + (i+1) + "." + def + " = " + "T" + (j+1) + "." + def;
+								if(count_combinations < total_table_combinations - 1)
+								{
+									sql += " AND \n";
+									count_combinations++;
+								}
+							}
+							else
+							{
+								compared.add(i);
+							}
+						}
+					}
+				}
+			}
+			else
+			{
+				boolean added_where = false;
+				for(int i = 0; i < fieldSize; i++)
+				{
+					ExportField f = fields.get(i);
+					
+					String[] parts = f.getFilter().split("\\$");
+					
+//					System.out.println(parts[0] + "<<< " + f.getName());
+					
+					String where_filter = parts[0].substring(parts[0].indexOf("(")+1, parts[0].indexOf(")"));
+					
+//					f.getAggregation() == ""
+					if(f.getFilter() != "" && where_filter != "")
+					{
+						System.out.println("There is a WHERE!");
+						System.out.println(where_filter);
+						if(added_where == false)
+						{
+							sql += " WHERE ";
+							added_where = true;
+						}
+						else
+						{
+							sql += " AND ";
+						}
+//						sql += f.getName() + " " + f.getFilter();
+						sql += f.getName() + " " + where_filter;
+					}
+				}
+			}
+			
+			
+			//Group By
+			boolean added_group_by = false;
+			if(isSubquery == true)
+			{
+				sql += "\n";
+				sql += " GROUP BY ";
+				added_group_by = true;
+				
+				if(constraint.getDuration().contains("DAY"))
+				{
+					sql += "DATE_FORMAT(record_time, '%Y-%m-%d')";
+				}
+				else if(constraint.getDuration().contains("HOUR"))
+				{
+					sql += "DATE_FORMAT(record_time, '%Y-%m-%d %H')";
+				}
+				else
+				{
+					String[] parts = constraint.getDuration().split(" ");
+					int minute = Integer.parseInt(parts[0]);
+					sql += "DATE_FORMAT(record_time, '%Y-%m-%d %H'), FLOOR(MINUTE(record_time) / " + minute + ")";
+				}
+				
+				int i = 0;
+				for(DefaultExportFields def : DefaultExportFields.values())
+				{
+					if(def.name() == "record_time") 
+					{
+//						i++;
+						continue;
+					}
+					
+					if(i == 0 && added_group_by == true)
+						sql += ", ";
+					else if(i!= 0)
+						sql += ", ";
+						
+					
+					if(tableSet.size() > 1 || (tableList.length == 1 && tableList[0].length() > 20))
+						sql += "t1.";
+					sql += def;
+					
+//					if(i < DefaultExportFields.values().length - 1)
+//						sql += ", ";
+//					i++;
+				}
+				for(int j = 0; j < fieldSize; j++)
+				{
+					if(!aggregation_indexes.contains(j))
+					{
+						sql += ", ";
+						sql += fields.get(j).getName();
+					}
+				}
+				
+			}
+			else if(aggregation_indexes.size() > 0)
+			{
+//				sql += ", ";
+				//sql += " GROUP BY ";
+//				int i = 0;
+				if(added_group_by == false)
+					sql += "\n GROUP BY ";
+				
+				int i = 0;
+				for(DefaultExportFields def : DefaultExportFields.values())
+				{
+//					if(def.name() == "record_time") 
+//					{
+////						i++;
+//						continue;
+//					}
+//					
+//					if(i == 0 && added_group_by == true)
+//						sql += ", ";
+//					else if(i!= 0)
+//						sql += ", ";
+						
+					
+					if(tableSet.size() > 1 || (tableList.length == 1 && tableList[0].length() > 20))
+						sql += "t1.";
+					sql += def;
+					
+					if(i < DefaultExportFields.values().length - 1)
+						sql += ", ";
+					i++;
+				}
+				for(int j = 0; j < fieldSize; j++)
+				{
+					if(fields.get(j).getGroupBy() != "")
+					{
+						sql += ", ";
+//						sql += fields.get(j).getName() + "$$$";
+						sql += fields.get(j).getGroupBy();
+//						System.out.println(fields.get(j).getName());
+					}
+				}
+			}
+			
+			//Having
+			if(isSubquery != true)
+			{
+				boolean addedHaving = false;
+				for(int i = 0; i < fieldSize; i++)
+				{
+					ExportField f = fields.get(i);
+					
+					String[] parts = f.getFilter().split("\\$");
+					String having_filter = parts[1].substring(parts[1].indexOf("(")+1, parts[1].indexOf(")"));
+					
+					if(f.getFilter() != "" && !having_filter.isEmpty())
+					{
+						System.out.println("There is a HAVING!");
+						System.out.println(having_filter);
+						if(addedHaving == false)
+						{
+							sql += "\n";
+							sql += " HAVING ";
+							addedHaving = true;
+						}
+						else
+						{
+							sql += " AND "; //could be "OR"
+						}
+//						sql += f.getAlias() + " " + f.getFilter();
+						sql += f.getAlias() + " " + having_filter;
+					}
+				}
+			}
+		}
+		
+		return sql;
+	}
+	
+	private static int countCombination(int setSize)
+	{
+		int result = 0;
+		
+		for(int i = setSize - 1; i > 0; i--)
+		{
+			result = result + i;
+		}
+		return result;
+	}
+	
+	private static boolean validateInput(List<ExportField> fields, ExportConstraint constraint)
+	{
+		if (
+				constraint.getFrom() == "" || 
+				constraint.getTo() == "" || 
+				constraint.getDuration() == "")
+		{
+			return false;
+		}
+		return true;
+	}
+	
+	private static boolean isTableSpecial(String table)
+	{
+//		for(SpecialTable specialTable : SpecialTableData.specialTableList)
+//		{
+//			if(table.contains(specialTable.getName()))
+//				return true;
+//		}
+		
+		for(Map.Entry<String, List<String>> item : SpecialTableData.specialTableDictionary.entrySet())
+		{
+			if(table.contains(item.getKey()))
+				return true;
+		}
+		
+		return false;
+	}
+	
+	private static List<String> getSameFieldInFieldSet(List<List<ExportField>> allFieldSet)
+	{
+		List<String> sameFields = new ArrayList<String>();
+		
+		for(int i = 0; i < allFieldSet.size()-1; i++)
+		{
+			HashSet<String> map = new HashSet<String>();
+		    for (String s : sameFields)
+		    {
+		    	map.add(s);
+//		    	System.out.println(ex.getName());
+		    }
+		    
+		    for (ExportField ex : allFieldSet.get(i)) {
+		        if (map.contains(ex.getName()))
+		        {
+		        	if(ex.getName().contains("."))
+			    	{
+			    		String pureName = ex.getName().split("\\.")[1];
+			    		System.out.println(pureName);
+			    		
+			    	}
+		        }
+		            // found duplicate!   
+		    }
+		}
+		
+		return null;
+	}
+}
